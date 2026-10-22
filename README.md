@@ -50,7 +50,16 @@ Here's an example of what you can do when it's connected to Claude.
 
 3. **Choose which chats the assistant may use**
 
-   Nothing is visible until you allow it. In a terminal:
+   Nothing is visible until you allow it. The easiest way is the local admin page:
+
+   ```bash
+   cd whatsapp-mcp-server
+   uv run admin.py gui
+   ```
+
+   It opens a page in your browser that lists every chat. Turn on **Read** or **Send** for each chat you want. Changes save at once. The page listens on `127.0.0.1` only and needs the one-time link printed in your terminal. It stops when you press Ctrl+C.
+
+   Or use the terminal:
 
    ```bash
    cd whatsapp-mcp-server
@@ -131,7 +140,7 @@ Without this setup, you'll likely run into errors like:
 
 **Changes are immediate.** The policy is re-read on every tool call. `admin.py revoke --jid …` takes effect on the next call, with no restart. It also deletes media you had exported from that chat.
 
-**The assistant cannot change access.** Admin commands are not MCP tools. The server only reads the policy. Granting access needs a typed `yes` in an interactive terminal.
+**The assistant cannot change access.** Admin commands and the admin page are not MCP tools. The server only reads the policy. In the CLI, granting access needs a typed `yes` in an interactive terminal. The admin page runs only while you keep `admin.py gui` open, and only the link with its one-time token works.
 
 **Prompt injection.** Anyone in an allowed group can write messages aimed at the assistant. Tools return messages as data and cannot change access. The assistant can still be misled within its allowed scope. Treat chat content as untrusted, and keep `send` off where you don't need it.
 

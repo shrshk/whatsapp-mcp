@@ -90,6 +90,21 @@ Rules:
 
 `admin.py` writes the file atomically with mode `0600`. Granting access needs a typed `yes` on an interactive terminal. Revoking never asks.
 
+### Admin page (`admin.py gui`)
+
+A local web page for choosing chats. It uses the same validated, atomic write path and the same revoke cleanup as the CLI. Safeguards:
+
+- It listens on `127.0.0.1` on a random port, and only while the command runs.
+- Every request needs a token that is random for each launch. The token is printed in the terminal and carried in the link.
+- The `Host` header must be the loopback address, which blocks DNS rebinding.
+- Writes must come from the page's own `Origin`, with a JSON body of at most 4 KB.
+- It sets a strict Content-Security-Policy with a per-response nonce, plus `no-referrer` and `frame-ancestors 'none'`. The page makes no external requests.
+- Chat names are written by other people. The page inserts them as text and never parses them as HTML.
+- If the policy file on disk is invalid, the page refuses to overwrite it (HTTP 409).
+- It does not log requests, because request lines contain JIDs.
+
+Turning on **Send** asks for confirmation first. The page works for anyone holding the token, which also means any local process that can read your terminal output. It is a convenience for the human at the keyboard, not a boundary against an agent with a shell. The threat model below covers that case.
+
 ## Deployment layers
 
 Pick the layer that matches the tools your assistant has.

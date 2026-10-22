@@ -10,6 +10,7 @@ never exposed as an MCP tool. Run it yourself in a terminal:
     uv run admin.py revoke --jid 15551234567@s.whatsapp.net
     uv run admin.py list
     uv run admin.py check
+    uv run admin.py gui          # pick chats in a local web page
 
 Granting access asks for confirmation on an interactive terminal. Revoking
 never does: reducing access is always safe.
@@ -22,9 +23,11 @@ import shutil
 import sqlite3
 import sys
 import tempfile
+import webbrowser
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import admin_gui
 import projector
 import whatsapp
 from access_policy import (
@@ -155,6 +158,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     r.add_argument("--jid", required=True)
     sub.add_parser("list", help="show the policy")
     sub.add_parser("check", help="validate the policy file")
+    g = sub.add_parser("gui", help="choose chats in a local web page (127.0.0.1 only)")
+    g.add_argument("--port", type=int, default=0, help="port to listen on (default: random)")
+    g.add_argument("--no-browser", action="store_true", help="print the link instead of opening a browser")
     args = parser.parse_args(argv)
 
     path = (args.policy or policy_path()).expanduser()
@@ -177,6 +183,21 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"OK: {len(policy.chats)} chat(s) allowed")
         if mode & 0o022:
             print(f"WARNING: {path} is writable by group/others (mode {mode:o}); run chmod 600")
+        return 0
+
+    if args.command == "gui":
+        gui = admin_gui.AdminGUI(path, args.port)
+        print("Admin page (keep this link private; it works only while this command runs):")
+        print(f"  {gui.url}")
+        print("Press Ctrl+C to stop.", flush=True)
+        if not args.no_browser:
+            webbrowser.open(gui.url)
+        try:
+            gui.serve_forever()
+        except KeyboardInterrupt:
+            print("\nStopped.")
+        finally:
+            gui.close()
         return 0
 
     if args.command == "discover":
