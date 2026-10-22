@@ -562,7 +562,8 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 	var err error
 
 	// First, check if we already have this file
-	chatDir := fmt.Sprintf("store/%s", strings.ReplaceAll(chatJID, ":", "_"))
+	// Chat JIDs and file names come from the network; keep both to one safe path component.
+	chatDir := filepath.Join(mediaRoot(), safeName(chatJID))
 	localPath := ""
 
 	// Get media info from the database
@@ -591,7 +592,7 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 	}
 
 	// Generate a local path for the file
-	localPath = fmt.Sprintf("%s/%s", chatDir, filename)
+	localPath = filepath.Join(chatDir, safeName(filepath.Base(filename)))
 
 	// Get absolute path
 	absPath, err := filepath.Abs(localPath)
@@ -610,7 +611,7 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 		return false, "", "", "", fmt.Errorf("incomplete media information for download")
 	}
 
-	fmt.Printf("Attempting to download media for message %s in chat %s...\n", messageID, chatJID)
+	fmt.Println("Attempting to download media...")
 
 	// Extract direct path from URL
 	directPath := extractDirectPathFromURL(url)
@@ -651,7 +652,7 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 		return false, "", "", "", fmt.Errorf("failed to save media file: %v", err)
 	}
 
-	fmt.Printf("Successfully downloaded %s media to %s (%d bytes)\n", mediaType, absPath, len(mediaData))
+	fmt.Printf("Successfully downloaded %s media (%d bytes)\n", mediaType, len(mediaData))
 	return true, mediaType, filename, absPath, nil
 }
 
@@ -678,7 +679,7 @@ func extractDirectPathFromURL(url string) string {
 // Start a REST API server to expose the WhatsApp client functionality
 func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port int) {
 	// Handler for sending messages
-	http.HandleFunc("/api/send", func(w http.ResponseWriter, r *http.Request) {
+	http.HandleFunc("/api/send", requireToken(func(w http.ResponseWriter, r *http.Request) {
 		// Only allow POST requests
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -703,11 +704,21 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 			return
 		}
 
-		fmt.Println("Received request to send message", req.Message, req.MediaPath)
+		// Enforce the access policy (when configured) on the canonical recipient JID.
+		recipient, ok := recipientJID(req.Recipient)
+		if !ok || !authorizeChat(recipient, "send") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			json.NewEncoder(w).Encode(SendMessageResponse{Success: false, Message: "Recipient not authorized for sending"})
+			return
+		}
+
+		// Never log message text or file paths.
+		fmt.Println("Received request to send message")
 
 		// Send the message
-		success, message := sendWhatsAppMessage(client, req.Recipient, req.Message, req.MediaPath)
-		fmt.Println("Message sent", success, message)
+		success, message := sendWhatsAppMessage(client, recipient, req.Message, req.MediaPath)
+		fmt.Println("Message sent", success)
 		// Set response headers
 		w.Header().Set("Content-Type", "application/json")
 
@@ -721,10 +732,10 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 			Success: success,
 			Message: message,
 		})
-	})
+	}))
 
 	// Handler for downloading media
-	http.HandleFunc("/api/download", func(w http.ResponseWriter, r *http.Request) {
+	http.HandleFunc("/api/download", requireToken(func(w http.ResponseWriter, r *http.Request) {
 		// Only allow POST requests
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -744,8 +755,16 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 			return
 		}
 
+		chatJID, ok := canonicalChatJID(req.ChatJID)
+		if !ok || !authorizeChat(chatJID, "read") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			json.NewEncoder(w).Encode(DownloadMediaResponse{Success: false, Message: "Chat not found or not authorized"})
+			return
+		}
+
 		// Download the media
-		success, mediaType, filename, path, err := downloadMedia(client, messageStore, req.MessageID, req.ChatJID)
+		success, mediaType, filename, path, err := downloadMedia(client, messageStore, req.MessageID, chatJID)
 
 		// Set response headers
 		w.Header().Set("Content-Type", "application/json")
@@ -772,10 +791,10 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 			Filename: filename,
 			Path:     path,
 		})
-	})
+	}))
 
-	// Start the server
-	serverAddr := fmt.Sprintf(":%d", port)
+	// Start the server (loopback only unless WHATSAPP_BRIDGE_ADDR says otherwise)
+	serverAddr := listenAddr(port)
 	fmt.Printf("Starting REST API server on %s...\n", serverAddr)
 
 	// Run server in a goroutine so it doesn't block
