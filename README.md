@@ -1,6 +1,8 @@
-# WhatsApp MCP Server
+# WhatsApp MCP Server (scoped access fork)
 
 This is a Model Context Protocol (MCP) server for WhatsApp.
+
+> **This fork adds scoped access.** The assistant sees only the chats you allow. It can send only to chats you allow with `send`. Everything else is denied by default, new chats included. See [Scoped Access](#scoped-access) and [docs/scoped-access.md](docs/scoped-access.md). Forked from [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp).
 
 With this you can search and read your personal Whatsapp messages (including images, videos, documents, and audio messages), search your contacts and send messages to either individuals or groups. You can also send media files including images, videos, documents, and audio messages.
 
@@ -29,7 +31,7 @@ Here's an example of what you can do when it's connected to Claude.
 1. **Clone this repository**
 
    ```bash
-   git clone https://github.com/lharries/whatsapp-mcp.git
+   git clone https://github.com/shrshk/whatsapp-mcp.git
    cd whatsapp-mcp
    ```
 
@@ -39,14 +41,27 @@ Here's an example of what you can do when it's connected to Claude.
 
    ```bash
    cd whatsapp-bridge
-   go run main.go
+   go run .
    ```
 
    The first time you run it, you will be prompted to scan a QR code. Scan the QR code with your WhatsApp mobile app to authenticate.
 
    After approximately 20 days, you will might need to re-authenticate.
 
-3. **Connect to the MCP server**
+3. **Choose which chats the assistant may use**
+
+   Nothing is visible until you allow it. In a terminal:
+
+   ```bash
+   cd whatsapp-mcp-server
+   uv run admin.py init                      # creates ~/.config/whatsapp-mcp/access.json (deny all)
+   uv run admin.py discover --query family   # find the exact JID of a chat
+   uv run admin.py allow --jid 120363000000000000@g.us          # read only
+   uv run admin.py allow --jid 15551234567@s.whatsapp.net --send # read + send
+   uv run admin.py list
+   ```
+
+4. **Connect to the MCP server**
 
    Copy the below json with the appropriate {{PATH}} values:
 
@@ -78,7 +93,7 @@ Here's an example of what you can do when it's connected to Claude.
    ~/.cursor/mcp.json
    ```
 
-4. **Restart Claude Desktop / Cursor**
+5. **Restart Claude Desktop / Cursor**
 
    Open Claude Desktop and you should now see WhatsApp as an available integration.
 
@@ -99,12 +114,89 @@ If you're running this project on Windows, be aware that `go-sqlite3` requires *
    ```bash
    cd whatsapp-bridge
    go env -w CGO_ENABLED=1
-   go run main.go
+   go run .
    ```
 
 Without this setup, you'll likely run into errors like:
 
 > `Binary was compiled with 'CGO_ENABLED=0', go-sqlite3 requires cgo to work.`
+
+## Scoped Access
+
+**What this protects.** It filters what the *assistant* can reach. WhatsApp has no per-chat device linking. The bridge is a linked device that syncs your whole account. This fork guarantees that the MCP tools expose only the chats you choose.
+
+**Default deny.** The policy file is `~/.config/whatsapp-mcp/access.json` (or `$WHATSAPP_MCP_POLICY`). It lists chats by exact JID, never by display name. Each chat gets `read`, `send` or both. Any chat not on the list is invisible, including chats synced later. A missing or invalid file denies everything.
+
+**Read-only by default.** `admin.py allow` grants `read`. Add `--send` to allow outbound messages to that chat. Sending files also needs an outbox folder. Set `WHATSAPP_MCP_OUTBOX` and only files inside it can be sent. Your MCP host's per-call approval for send tools is a good extra layer. This server does not provide that layer.
+
+**Changes are immediate.** The policy is re-read on every tool call. `admin.py revoke --jid …` takes effect on the next call, with no restart. It also deletes media you had exported from that chat.
+
+**The assistant cannot change access.** Admin commands are not MCP tools. The server only reads the policy. Granting access needs a typed `yes` in an interactive terminal.
+
+**Prompt injection.** Anyone in an allowed group can write messages aimed at the assistant. Tools return messages as data and cannot change access. The assistant can still be misled within its allowed scope. Treat chat content as untrusted, and keep `send` off where you don't need it.
+
+### Isolating the bridge
+
+The checks in the MCP server protect you when the assistant only has MCP tools. If the assistant also has a shell or a network tool on the same machine, it could skip the MCP server. It could read `whatsapp-bridge/store/` or call the bridge API. Close those paths:
+
+1. **Loopback only.** The bridge now listens on `127.0.0.1:8080` by default. Never expose it with `WHATSAPP_BRIDGE_ADDR=0.0.0.0:…`.
+2. **Bridge enforcement.** Start the bridge with the same policy and a shared token. Pass the token to the MCP server:
+
+   ```bash
+   cd whatsapp-bridge
+   WHATSAPP_POLICY_FILE=~/.config/whatsapp-mcp/access.json WHATSAPP_BRIDGE_TOKEN=<random> go run .
+   ```
+
+   ```json
+   "env": { "WHATSAPP_BRIDGE_TOKEN": "<random>", "WHATSAPP_MCP_OUTBOX": "/Users/you/whatsapp-outbox" }
+   ```
+
+3. **Filtered database.** Run the projector. It writes a copy that holds only allowed chats. Point the MCP server at that copy:
+
+   ```bash
+   cd whatsapp-mcp-server
+   uv run projector.py --source ../whatsapp-bridge/store/messages.db \
+       --dest ~/.local/share/whatsapp-mcp/projection.db --watch 30
+   ```
+
+   Then set `"WHATSAPP_MCP_DB": "~/.local/share/whatsapp-mcp/projection.db"` in the MCP server env. When you revoke, set `WHATSAPP_MCP_PROJECTION` to the same path so `admin.py revoke` prunes the copy at once. For full isolation, run the MCP server as a separate macOS user, or in a container, that cannot read `whatsapp-bridge/store/`.
+
+Do not use privileged containers, host networking or broad volume mounts. The MCP server needs only:
+
+- the policy file (read-only)
+- the message DB or projection (read-only)
+- the outbox
+- the media export folder
+
+### Configuration
+
+| Variable | Used by | Default |
+| --- | --- | --- |
+| `WHATSAPP_MCP_POLICY` | MCP server, admin | `~/.config/whatsapp-mcp/access.json` |
+| `WHATSAPP_MCP_DB` | MCP server | `whatsapp-bridge/store/messages.db` |
+| `WHATSAPP_MCP_OUTBOX` | MCP server | unset (file sending off) |
+| `WHATSAPP_MCP_MEDIA_DIR` | MCP server, admin | `~/.local/share/whatsapp-mcp/media` |
+| `WHATSAPP_MCP_PROJECTION` | admin (`revoke`) | unset |
+| `WHATSAPP_API_BASE_URL` | MCP server | `http://127.0.0.1:8080/api` |
+| `WHATSAPP_BRIDGE_TOKEN` | MCP server, bridge | unset (no token) |
+| `WHATSAPP_BRIDGE_MEDIA_DIR` | MCP server, bridge | `whatsapp-bridge/store` |
+| `WHATSAPP_POLICY_FILE` | bridge | unset (bridge trusts its caller) |
+| `WHATSAPP_BRIDGE_ADDR` | bridge | `127.0.0.1:8080` |
+| `WHATSAPP_BRIDGE_DB` | admin (`discover`) | `whatsapp-bridge/store/messages.db` |
+
+### Verifying
+
+```bash
+cd whatsapp-mcp-server && uv run pytest -q   # policy, scoped reads/writes, media, revocation, MCP discovery
+cd whatsapp-bridge && go test ./...          # bridge policy, token, path sanitising
+uv run admin.py check                        # validate your policy file
+```
+
+The tests use a small fixture store and a mock bridge. They never read your real messages. For a manual check without sharing chat content:
+
+1. Allow one test group.
+2. Ask the assistant to `list_chats`. Confirm only that group appears.
+3. Revoke the group. Confirm it disappears on the next call.
 
 ## Architecture Overview
 
@@ -126,20 +218,21 @@ Once connected, you can interact with your WhatsApp contacts through Claude, lev
 
 ### MCP Tools
 
-Claude can access the following tools to interact with WhatsApp:
+Claude can access the following tools. Every tool is limited to the chats in your access policy:
 
-- **search_contacts**: Search for contacts by name or phone number
-- **list_messages**: Retrieve messages with optional filters and context
-- **list_chats**: List available chats with metadata
-- **get_chat**: Get information about a specific chat
-- **get_direct_chat_by_contact**: Find a direct chat with a specific contact
-- **get_contact_chats**: List all chats involving a specific contact
-- **get_last_interaction**: Get the most recent message with a contact
-- **get_message_context**: Retrieve context around a specific message
-- **send_message**: Send a WhatsApp message to a specified phone number or group JID
-- **send_file**: Send a file (image, video, raw audio, document) to a specified recipient
-- **send_audio_message**: Send an audio file as a WhatsApp voice message (requires the file to be an .ogg opus file or ffmpeg must be installed)
-- **download_media**: Download media from a WhatsApp message and get the local file path
+- **list_messages**: Retrieve messages from allowed chats with optional filters and context
+- **list_chats**: List allowed chats with metadata
+- **get_chat**: Get information about an allowed chat
+- **get_direct_chat_by_contact**: Find an allowed direct chat by exact phone number
+- **get_contact_chats**: List allowed chats involving a specific contact
+- **get_last_interaction**: Get the most recent message in an allowed chat (takes `chat_jid`)
+- **get_message_context**: Retrieve context around a message (takes `message_id` **and** `chat_jid`)
+- **send_message**: Send a message to a chat allowed with `send`
+- **send_file**: Send a file from the outbox folder to a chat allowed with `send`
+- **send_audio_message**: Send an outbox audio file as a voice message (requires an .ogg opus file or ffmpeg)
+- **download_media**: Download media from a message in an allowed chat and get a local file path
+
+`search_contacts` was removed: your full contact list is outside any chat scope.
 
 ### Media Handling Features
 
