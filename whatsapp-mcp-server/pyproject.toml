@@ -1,7 +1,7 @@
 [project]
 name = "whatsapp-mcp-server"
 version = "0.1.0"
-description = "Add your description here"
+description = "WhatsApp MCP server with scoped, allowlisted chat access"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -9,3 +9,11 @@ dependencies = [
     "mcp[cli]>=1.6.0",
     "requests>=2.32.3",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
